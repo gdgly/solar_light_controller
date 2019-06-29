@@ -24,6 +24,8 @@
 
 #define PWM_CH1   TIM1
 
+//UART
+#define UART_BUFFER_SIZE   (256)
 
 /* LEDS */
 #define LED_OFF(id)  HAL_GPIO_WritePin(id, GPIO_PIN_SET)
@@ -56,8 +58,19 @@ void data_interface_hal_init(void);
 *******************************************************************************/
 void adc_rx_proc( void (*func_cb)(void *, int len) );
 
+/*******************************************************************************
+* Function Name  : usart_rx_proc.
+* Description    :Hardware adaptation layer adc process.
+* Input          : None.
+* Output         : None.
+* Return         : None.
+*******************************************************************************/
+void usart_rx_proc( void (* usart_rx_callback)(uint8_t *, uint8_t) );
+
+
 
 #define hal_read_TickCounter() HAL_GetTick()
 
+void uart2_irq(UART_HandleTypeDef *huart);
 
 #endif

@@ -34,6 +34,5 @@
         if(name##timer = TIMER_TASK_GET_TICK_COUNT(),condition)
 
 
-
 #endif
 /*****************************END OF FILE***************************/

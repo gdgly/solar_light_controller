@@ -17,21 +17,23 @@ static float adc_real_value_array[ADC_CHANNEL_NUMBER + 1] = {0};
 
 
 static float f_led_power_set = 1.0;
+static float f_bat_power_set = 1.0;
 
 static int16_t s16_cur_duty_max = 0;
 static int16_t s16_cur_duty_min = 9999;
 
 static int ctrl_counter = 0;
-static uint8_t u8_mode_set = MODE_LED_OUT;
+static uint8_t u8_mode_set = MODE_BAT_PID;
+static uint8_t u8_mode_fault = 0;
 
 static pidc_t pid_buck = {
-    .kp = 10,
+    .kp = 33,  //current
     .ki = 0,
-    .kd = 1,
+    .kd = 0.3,
 };
 
 static pidc_t pid_boost = {
-    .kp = 100,
+    .kp = 100,  //current
     .ki = 0,
     .kd = 1,
 };
@@ -72,19 +74,29 @@ void led_proc(void)
     SWITCH_TASK_INIT(task1);
     
     SWITCH_TASK(task1){
+        printf("\r\n\r\n");
+        printf("--------------------------------[");
+        if(u8_mode_set == MODE_LED_OUT) {
+            printf(GREEN_FONT, string_mode[u8_mode_set]);
+        } else if(u8_mode_set == MODE_BAT_PID) {
+            printf(RED_FONT, string_mode[u8_mode_set]);
+        }
+        printf("]--------------------------------");
         printf("\r\n");
     }
     
     SWITCH_TASK(task1){
+        static uint32_t last_time = 0;
         APP_DEBUG(
             "%s, ctl= %d cnt/s, duty recent 1s= (%4d)%.1f%%-(%4d)%.1f%% \r\n",
             string_mode[u8_mode_set],
-            ctrl_counter,
+            ctrl_counter*1000/(TIMER_TASK_GET_TICK_COUNT() - last_time),
             s16_cur_duty_min,
             s16_cur_duty_min*100.0/PWM_GET_DUTY_MAX(PWM_CH1),
             s16_cur_duty_max,
             s16_cur_duty_max*100.0/PWM_GET_DUTY_MAX(PWM_CH1) 
         );
+        last_time = TIMER_TASK_GET_TICK_COUNT();
         ctrl_counter = 0;
         s16_cur_duty_max = 0;
         s16_cur_duty_min = MAX_OUTPUT_DUTY;
@@ -135,6 +147,33 @@ void led_proc(void)
     SWITCH_TASK(task1){
         printf("--------------------------------[ADC]--------------------------\r\n");
     }
+    
+    SWITCH_TASK(task1){
+        printf("$TEST,%.3f,%.3f,%.3f,%.3f,%.3f,\r\n", 
+            GET_PV_VOLTAGE(), GET_BAT_VOLTAGE(), GET_LED_VOLTAGE(), GET_BAT_CURRENT(), GET_LED_CURRENT()
+        );
+    }
+    
+    SWITCH_TASK(task1){
+        printf("t0.txt=\"%.3fV\"\xff\xff\xff", GET_PV_VOLTAGE());
+    }
+    
+    SWITCH_TASK(task1){
+        printf("t1.txt=\"%.3fV\"\xff\xff\xff", GET_BAT_VOLTAGE());
+    }
+    
+    SWITCH_TASK(task1){
+        printf("t2.txt=\"%.3fV\"\xff\xff\xff", GET_LED_VOLTAGE());
+    }
+    
+    SWITCH_TASK(task1){
+        printf("t3.txt=\"%.3fA\"\xff\xff\xff", GET_BAT_CURRENT());
+    }
+    
+    SWITCH_TASK(task1){
+        printf("t4.txt=\"%.3fA\"\xff\xff\xff", GET_LED_CURRENT());
+    }
+    
     
     SWITCH_TASK_END(task1);
 }
@@ -221,9 +260,17 @@ void mppt_control_proc(void)
 
 
 
+#define BUCK_MAX_OUTPUT_DUTY    (MAX_OUTPUT_DUTY-50)
+
 void pid_buck_control_proc(void)
 {
-    int16_t ctrl_duty = pid_ctrl(&pid_buck, GET_BAT_VOLTAGE()*GET_BAT_CURRENT() );
+    float vvvvv = GET_BAT_CURRENT();
+    int16_t ctrl_duty = pid_ctrl(&pid_buck, vvvvv );
+    
+    if(GET_PV_VOLTAGE() < 5) {
+        ctrl_duty = pid_buck.output = 0;
+    }
+    
     PWM_SET_DUTY(PWM_CH1, ctrl_duty);
     
      //debug 1s duty value
@@ -242,7 +289,7 @@ void pid_boost_control_proc(void)
     float vvvvv = GET_LED_CURRENT();
     int16_t ctrl_duty = pid_ctrl(&pid_boost, vvvvv );
     
-    if(GET_BAT_VOLTAGE() < 3) {
+    if(GET_BAT_VOLTAGE() < 5) {
         ctrl_duty = pid_boost.output = BOOST_MIN_OUTPUT_DUTY;
     }
     //printf("%d %.2f \r\n", ctrl_duty, vvvvv);
@@ -273,6 +320,28 @@ void adc_receive_proc(void *pbuf, int len)
             adc_real_value_array[i] = value_adc_adjustment(adc_real_voltage_array[i], i);
         }
         
+        /**********************************[mode ctrl]***********************************/
+        u8_mode_fault = 0;
+        //滞回比较器
+        if(GET_PV_VOLTAGE() > GET_BAT_VOLTAGE() ) {
+            //太阳能板电压高于电池电压，电池过放，进入充电模电
+            if(u8_mode_set != MODE_BAT_PID) {
+                pid_buck.output = 0;
+                u8_mode_set = MODE_BAT_PID; //Charging mode
+            }
+        } else if(GET_PV_VOLTAGE() < 5) {
+            //太阳能板电压低于光照下限，电池过充，进入放电模式
+            if(u8_mode_set != MODE_LED_OUT) {
+                pid_boost.output = BOOST_MIN_OUTPUT_DUTY;
+                u8_mode_set = MODE_LED_OUT; //Discharge, LED On
+            }
+        } else {
+            //电池满，光照足，异常
+            //电池空，光照弱，异常
+            u8_mode_fault = 1;
+        }
+        /**********************************[mode ctrl]***********************************/
+        
         switch(u8_mode_set) {
         case MODE_MPPT:
             LED_HIGH(LED_CTRL_BASE);
@@ -295,6 +364,19 @@ void adc_receive_proc(void *pbuf, int len)
     }
 }
 
+void uart_proc(uint8_t *sbuf, uint8_t len)
+{
+    static uint8_t flag = 0;
+    if(flag) {
+        pid_set_value(&pid_boost, 1.0);
+    } else {
+        pid_set_value(&pid_boost, 0.1);
+    }
+    flag = !flag;
+    printf("rx %d, cmd[%.*s]\r\n", len, len, sbuf);
+}
+
+
 
 void user_system_setup(void)
 {
@@ -310,17 +392,18 @@ void user_setup(void)
     param_default_value_init();
     
     //pid controller
-    pid_set_output_limit(&pid_buck, MAX_OUTPUT_DUTY, 0);
+    pid_set_output_limit(&pid_buck, BUCK_MAX_OUTPUT_DUTY, 0);
     pid_set_output_limit(&pid_boost, BOOST_MAX_OUTPUT_DUTY, BOOST_MIN_OUTPUT_DUTY);
     
-    pid_set_value(&pid_buck, 15);
+    pid_set_value(&pid_buck, f_bat_power_set);
     pid_set_value(&pid_boost, f_led_power_set);
 }
 
 void user_loop(void)
 {
-    TIMER_TASK(led_task, 1000.0/7, 1) { led_proc(); }
+    TIMER_TASK(led_task, 200, 1) { led_proc(); }
     adc_rx_proc(adc_receive_proc);
+    usart_rx_proc(uart_proc);
 }
 
 
