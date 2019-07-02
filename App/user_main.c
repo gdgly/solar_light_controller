@@ -322,7 +322,7 @@ void adc_receive_proc(void *pbuf, int len)
         uint16_t *u16pbuf = (uint16_t *)pbuf;
         
         for(int i=0; i<ADC_CHANNEL_NUMBER; i++) {
-            //简单滤波算法
+            //简单去极值滤波算法
             uint16_t adc_value = No_Max_Min_Filter(u16pbuf, ADC_CONV_NUMBER, ADC_CHANNEL_NUMBER, i);
             //计算电压值
             adc_voltage_array[i] = adc_value*3.3/4095;
@@ -336,13 +336,13 @@ void adc_receive_proc(void *pbuf, int len)
         u8_mode_fault = 0;
         //滞回比较器
         if(GET_PV_VOLTAGE() > GET_BAT_VOLTAGE() ) {
-            //太阳能板电压高于电池电压，电池过放，进入充电模电
+            //太阳能板电压高于电池电压，进入充电模式
             if(u8_mode_set != MODE_BAT_PID) {
                 pid_buck.output = BUCK_MAX_OUTPUT_DUTY;
                 u8_mode_set = MODE_BAT_PID; //Charging mode
             }
         } else if(GET_PV_VOLTAGE() < 5) {
-            //太阳能板电压低于光照下限，电池过充，进入放电模式
+            //太阳能板电压低于光照下限，进入放电模式
             if(u8_mode_set != MODE_LED_OUT) {
                 pid_boost.output = BOOST_MIN_OUTPUT_DUTY;
                 u8_mode_set = MODE_LED_OUT; //Discharge, LED On
