@@ -16,7 +16,7 @@ static float adc_real_voltage_array[ADC_CHANNEL_NUMBER + 1] = {0};
 static float adc_real_value_array[ADC_CHANNEL_NUMBER + 1] = {0};
 
 
-static float f_led_power_set = 1.0;
+static float f_led_power_set = 0;
 static float f_bat_power_set = 1.0;
 
 static int16_t s16_cur_duty_max = 0;
@@ -59,10 +59,17 @@ static char *string_tail_adc_ch[ADC_CHANNEL_NUMBER] = {
 };
 
 static char *string_mode[MODE_NUM] = {
-    "MODE_MPPT",
-    "MODE_LED_OUT",
-    "MODE_BAT_PID",
+    "MPPT充电",
+    "放电",
+    "充电",
 };
+
+static char *string_mode_gbk[MODE_NUM] = {
+    "MPPT\xb3\xe4\xb5\xe7",
+    "\xb7\xc5\xb5\xe7",
+    "\xb3\xe4\xb5\xe7",
+};
+
 
 
 
@@ -155,23 +162,27 @@ void led_proc(void)
     }
     
     SWITCH_TASK(task1){
-        printf("t0.txt=\"%.3fV\"\xff\xff\xff", GET_PV_VOLTAGE());
+        printf("\xff\xff\xfft0.txt=\"%.3fV\"\xff\xff\xff\r\n", GET_PV_VOLTAGE());
     }
     
     SWITCH_TASK(task1){
-        printf("t1.txt=\"%.3fV\"\xff\xff\xff", GET_BAT_VOLTAGE());
+        printf("\xff\xff\xfft1.txt=\"%.3fV\"\xff\xff\xff\r\n", GET_BAT_VOLTAGE());
     }
     
     SWITCH_TASK(task1){
-        printf("t2.txt=\"%.3fV\"\xff\xff\xff", GET_LED_VOLTAGE());
+        printf("\xff\xff\xfft2.txt=\"%.3fV\"\xff\xff\xff\r\n", GET_LED_VOLTAGE());
     }
     
     SWITCH_TASK(task1){
-        printf("t3.txt=\"%.3fA\"\xff\xff\xff", GET_BAT_CURRENT());
+        printf("\xff\xff\xfft3.txt=\"%.3fA\"\xff\xff\xff\r\n", GET_BAT_CURRENT());
     }
     
     SWITCH_TASK(task1){
-        printf("t4.txt=\"%.3fA\"\xff\xff\xff", GET_LED_CURRENT());
+        printf("\xff\xff\xfft4.txt=\"%.3fA\"\xff\xff\xff\r\n", GET_LED_CURRENT());
+    }
+    
+    SWITCH_TASK(task1){
+        printf("\xff\xff\xfft5.txt=\"%s\"\xff\xff\xff\r\n", string_mode_gbk[u8_mode_set]);
     }
     
     
@@ -261,6 +272,7 @@ void mppt_control_proc(void)
 
 
 #define BUCK_MAX_OUTPUT_DUTY    (MAX_OUTPUT_DUTY-50)
+#define BUCK_MIN_OUTPUT_DUTY    (200)
 
 void pid_buck_control_proc(void)
 {
@@ -268,7 +280,7 @@ void pid_buck_control_proc(void)
     int16_t ctrl_duty = pid_ctrl(&pid_buck, vvvvv );
     
     if(GET_PV_VOLTAGE() < 5) {
-        ctrl_duty = pid_buck.output = 0;
+        ctrl_duty = pid_buck.output = BUCK_MAX_OUTPUT_DUTY;
     }
     
     PWM_SET_DUTY(PWM_CH1, ctrl_duty);
@@ -326,7 +338,7 @@ void adc_receive_proc(void *pbuf, int len)
         if(GET_PV_VOLTAGE() > GET_BAT_VOLTAGE() ) {
             //太阳能板电压高于电池电压，电池过放，进入充电模电
             if(u8_mode_set != MODE_BAT_PID) {
-                pid_buck.output = 0;
+                pid_buck.output = BUCK_MAX_OUTPUT_DUTY;
                 u8_mode_set = MODE_BAT_PID; //Charging mode
             }
         } else if(GET_PV_VOLTAGE() < 5) {
@@ -364,16 +376,25 @@ void adc_receive_proc(void *pbuf, int len)
     }
 }
 
+
 void uart_proc(uint8_t *sbuf, uint8_t len)
 {
     static uint8_t flag = 0;
-    if(flag) {
-        pid_set_value(&pid_boost, 1.0);
-    } else {
-        pid_set_value(&pid_boost, 0.1);
-    }
-    flag = !flag;
     printf("rx %d, cmd[%.*s]\r\n", len, len, sbuf);
+    sbuf[len] = 0;
+    float f_set_led_current = 0;
+    
+    if(sscanf( (char *)sbuf, "POWER:%f", &f_set_led_current) != 1) {
+        APP_ERROR("cmd parse error\r\n");
+        return;
+    }
+    
+    f_set_led_current /= 30;
+    
+    if(f_set_led_current <= 1.0 && f_set_led_current >= 0.0) {
+        APP_DEBUG("set current = %.3fA\r\n", f_set_led_current);
+        pid_set_value(&pid_boost, f_set_led_current);
+    }
 }
 
 
@@ -392,7 +413,9 @@ void user_setup(void)
     param_default_value_init();
     
     //pid controller
-    pid_set_output_limit(&pid_buck, BUCK_MAX_OUTPUT_DUTY, 0);
+    //降压上限防止高管长导通，下限防止电池短路
+    pid_set_output_limit(&pid_buck, BUCK_MAX_OUTPUT_DUTY, BUCK_MIN_OUTPUT_DUTY);
+    //升压上限防止电池短路，下限防止高管长导通
     pid_set_output_limit(&pid_boost, BOOST_MAX_OUTPUT_DUTY, BOOST_MIN_OUTPUT_DUTY);
     
     pid_set_value(&pid_buck, f_bat_power_set);
@@ -401,7 +424,7 @@ void user_setup(void)
 
 void user_loop(void)
 {
-    TIMER_TASK(led_task, 200, 1) { led_proc(); }
+    TIMER_TASK(led_task, 180, 1) { led_proc(); }
     adc_rx_proc(adc_receive_proc);
     usart_rx_proc(uart_proc);
 }
